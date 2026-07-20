@@ -11,6 +11,8 @@ stream audience.
   a live overlay. Locked decisions, game settings, open questions.
 - **[technical-design.md](./technical-design.md)** — data model, the role-security boundary
   (Row-Level Security), and how the overlay stays live without leaking roles.
+- **[game-rules.md](./game-rules.md)** — implementable game rules and the canonical game-flow
+  state machine. An unofficial working extraction — see the disclaimer at the top of the file.
 
 ## Stack
 

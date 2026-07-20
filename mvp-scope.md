@@ -1,11 +1,11 @@
 # MVP Scope — Complete a Game + Live Overlay
 
 **Status:** draft for review
-**Note:** A design document. It references internal requirements and official-rules
-documents that are not part of this public repository.
+**Note:** A design document. It references an internal requirements document that is not part
+of this public repository; the game rules are in [game-rules.md](./game-rules.md).
 
 This document defines the first deliverable only. It deliberately does not restate the
-state machine or the rules — those live in the internal rules document and are cited here by ID.
+state machine or the rules — those live in [game-rules.md](./game-rules.md) and are cited here by ID.
 
 ---
 

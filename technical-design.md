@@ -5,7 +5,7 @@ Supabase Auth. See [mvp-scope.md](./mvp-scope.md) for scope and locked decisions
 
 This document covers the data model and the role-security boundary for the MVP only.
 Game-flow logic (the 19-state machine) lives in TypeScript in the Next.js app and is
-specified in the internal rules document (not part of this public repository) — not repeated here.
+specified in [game-rules.md](./game-rules.md) §1 — not repeated here.
 
 ---
 
