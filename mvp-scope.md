@@ -25,8 +25,12 @@ including roles — for a stream audience.
 - Speeches with timer; nominations; voting including tie escalation and all-out vote
 - Night actions: Mafia shot, Don check, Sheriff check, best move
 - Win-condition evaluation and game end
-- Append-only event log of every judge action
-- Live overlay: seat numbers, nicknames, alive/dead, day/night, roles (gated)
+- Every action recorded as a typed, editable record (nominations, votes, eliminations, night actions)
+- Corrections are edits: the judge can fix or delete any recorded action, and can directly
+  override any seat's state, role, or fouls (D8)
+- State-machine transitions happen only on explicit judge confirmation (D10)
+- Live overlay: seat numbers, nicknames, alive/dead, day/night, roles (roles view only, D7); no timer
+- Two staff roles: judges run their own games, admins have full access to all games (D9)
 
 ## 3. Out of scope
 
@@ -50,9 +54,16 @@ no automatic consequence. The full foul catalogue and its penalties are out.
 | D1 | **Judge records the physical card draw.** App does not deal roles. | Matches rulebook; players draw cards. Avoids a rules dispute on stream. |
 | D2 | **Build the red (proposed) ruleset**, stamped per game via `ruleset_version`. | Federation's direction of travel; mostly additive. Version stamping means an old game always replays under the rules it was played by. |
 | D3 | **Rule variants are per-game settings, not code branches.** | Judge discretion and ruleset drift are permanent facts of this domain. |
-| D4 | **Event-sourced game state.** Every judge action is an immutable event; current state is a projection. | Makes scoring a pure function over the log when it lands later. Also gives undo and replay for free — and `requirements.md` ranks durability the #1 improvement over the existing system. |
+| D4 | **Normalized relational model.** Every game action is a typed row (nominations, vote rounds, eliminations, night actions); a seat's alive/dead and the win condition are recomputed from those rows, never maintained by hand. | The typed tables *are* the game history — scoring reads them directly when it lands later, and Postgres rows give the durability `requirements.md` ranks #1. Replaces an earlier event-sourced design: same information, less machinery, and corrections become ordinary edits (D8). |
 | D5 | **Overlay is a separate read-only endpoint**, not a mode of the judge app. | Role leakage to a player destroys the game. This is a security boundary, not a view toggle. |
 | D6 | **Votes stored as aggregate counts**, not per-voter. Judge enters a tally per candidate; individual voter identity is not captured. | Per-voter is impractical during a ~1.5s show of hands. Consequence: scoring rules needing vote identity (e.g. 8.5.1.1) cannot be auto-derived — they would require separate manual judge entry if ever adopted. Resolves OQ-D. |
+| D7 | **Two overlay views per game** — a *safe* view that never shows roles and a *roles* view that always does, each behind its own unguessable token. | The overlay is a view, so role visibility is a property of the URL loaded, not mutable game state. Replaces the earlier `show_roles_on_overlay` game setting and removes any mid-game toggle ambiguity: the stream operator simply loads the view they want. |
+| D8 | **Corrections are edit-in-place.** The judge can edit or delete any recorded action at any time — "pressed 4, meant 3" is fixed by editing that record, and derived state recomputes. The judge can also directly override any seat's state, role, or foul count as the final word. | Judges make live mistakes and fixing them must be simple. An undo stack forces unwinding every intervening action; editing the wrong record directly does not. |
+| D9 | **Two staff roles: judge and admin.** A judge runs their own games; an admin has full access to every game, including taking over a live one. | Matches federation staffing, and covers a judge dropping mid-game without needing a separate handoff protocol. |
+| D10 | **State-machine transitions require explicit judge confirmation.** The app proposes the next phase; nothing advances until the judge confirms. | A mis-tap must never cascade the game forward on its own; the judge remains the authority the rulebook says they are. |
+
+Trade-off accepted with D4/D8: there is no append-only audit trail of judge edits. If
+dispute-proofing is ever needed, a generic DB history trigger adds it without app changes.
 
 ---
 
@@ -64,9 +75,11 @@ Per-game, set at creation, immutable once the game starts:
 |---|---|---|
 | `ruleset_version` | `emf-2026-07-proposed` | Which rule set this game was played under |
 | `allow_split_3_at_9` | `false` | Whether an all-out vote may eliminate three players when nine remain (GR-65). Judge-discretionary in practice; ruleset-dependent. |
-| `show_roles_on_overlay` | `false` | Whether the overlay exposes roles. **Must default off.** |
 | `speech_seconds` | `60` | GR timing table |
 | `tie_speech_seconds` | `30` | GR-58 |
+
+Role visibility on the overlay is deliberately **not** a game setting — it is a property of
+which overlay view is loaded (D7).
 
 `allow_split_3_at_9` is the first of what will be several rule-variant flags. The settings
 model should be extensible without migration — expect more.
@@ -79,25 +92,29 @@ Day elimination is **a set, not a single player**. The all-out vote (GR-61–62)
 two or more players simultaneously. Any model assuming one-elimination-per-day will need
 rework, so it is specified correctly from the start.
 
-Consequence, currently **unresolved** — see §8 OQ-A.
+Consequence for final words: resolved — see §8 OQ-A.
 
 ---
 
 ## 7. Overlay security requirements
 
-The overlay's purpose is to show viewers who the Mafia are. The players at the table must
-never see it. Therefore:
+Overlays are for viewers only and never interfere with the table — phones are prohibited at
+the table, so players cannot see them during play. Requirements:
 
-- **O1** — Overlay is a distinct endpoint with its own unguessable per-game token.
-- **O2** — Role data is filtered **server-side**. Never sent to a non-overlay client and
-  hidden with CSS or client-side JS.
-- **O3** — `show_roles_on_overlay` defaults **off** and is an explicit per-game judge action.
-- **O4** — **An eliminated player's role is never revealed** (4.4.16 / GR, and the one hard
-  overlay constraint the rulebook does impose). "Show all roles" is wrong.
-- **O5** — Overlay is strictly read-only. It can never mutate game state.
+- **O1** — Each overlay view (D7) is a distinct endpoint with its own unguessable per-game
+  token. The roles view and the safe view never share a token.
+- **O2** — Role data is filtered **server-side**, keyed off which token was presented. Roles
+  are never sent to a safe-view client and hidden with CSS or client-side JS.
+- **O3** — The safe view is what game creation surfaces by default; the roles URL is a
+  separate artifact the judge hands only to the stream operator.
+- **O4** — Rule 4.4.16 is a **table rule**: the *players* must not learn whether a dead
+  player was Mafia, Sheriff, or Don. It imposes nothing on overlay content. The roles view
+  shows every seat's role — including dead seats — for the whole game; the safe view shows
+  none, ever.
+- **O5** — Overlay is strictly read-only. It can never mutate game state, and overlay
+  clients must not be able to publish to the live-update channel (see technical design §4).
 
-O4 is easy to get wrong: it is narrower than showing every role, and violating it on stream
-is a visible rules breach.
+The overlay shows no speech timer — timing lives on the judge's screen only.
 
 ---
 
@@ -117,12 +134,12 @@ OQ-C split-3 default) are non-blocking and can be answered later without rework.
 
 ## 9. Build order
 
-1. **Event log + game state projection** — the spine. Nothing else works without it.
+1. **Data model + derived-state recompute** — the spine. Nothing else works without it.
 2. **Game creation + seating + role recording** (D1)
 3. **Day phase** — speeches, timer, nominations, voting, tie escalation, all-out vote
 4. **Night phase** — shot, Don check, Sheriff check, best move
 5. **Win conditions + game end**
-6. **Overlay** — read-only projection of the same event log
+6. **Overlay** — read-only view over the same data
 
 Steps 1 and 6 are the two with architectural consequences. 2–5 are mostly a faithful
 transcription of the `game-rules.md` state machine.
@@ -134,7 +151,7 @@ transcription of the `game-rules.md` state machine.
 **Next.js (App Router) on Vercel + Supabase Cloud (Postgres, Realtime, RLS) + Supabase
 Auth.** BaaS-first for minimal maintenance. TypeScript, not Python. See `CLAUDE.md` for the
 architecture notes — chiefly that RLS is the role-security boundary (D5), and the overlay
-subscribes to the state projection via Realtime.
+receives its live updates via Realtime Broadcast.
 
 ## 11. Not yet decided
 
